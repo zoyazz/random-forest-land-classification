@@ -1,0 +1,162 @@
+var aoi = ee.Geometry.Point(149.983, -32.9822);
+Map.setCenter(-111.38, 56.75, 8); // Center on Fort McMurray.
+//Map.setCenter(-79.66,43.55, 8); // Center on UTM.
+
+//collection restricted to summer of 2023
+var startDay = '2016-06-01';
+var endDay = '2016-08-31';
+
+var extent = ee.Geometry.Rectangle(-113.31,56.01,-108.37,57.38);
+var extent_UTM = ee.Geometry.Rectangle(-79.66,43.55,-79,44);
+
+// scaling function
+function applyScaleFactors(image) {
+var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+return image.addBands(opticalBands, null, true)
+.addBands(thermalBands, null, true);
+}
+// Cloud mask for L8 images
+function maskClouds(image) {
+var L8cloudsBitMask = 1 << 3;// Bits 3 and 4 are cloud and cloud shadow, respectively.
+var L8cloudShadowBitMask = 1 << 4;
+var L8Qa = image.select('QA_PIXEL'); // Get the pixel QA band.
+var L8mask = L8Qa.bitwiseAnd(L8cloudShadowBitMask).eq(0)
+.and(L8Qa.bitwiseAnd(L8cloudsBitMask).eq(0)); // Both flags should be 
+// set to zero, indicating clear conditions.
+return image.updateMask(L8mask);
+}
+
+// 2016 image 
+var L8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+.filterDate(startDay, endDay) // time filter
+.map(applyScaleFactors) // scale images
+.map(maskClouds) // mask clouds and shadows
+.median() // median image of the time duration
+.clip (extent); //clip to the extent of interest
+var visualization = {bands: ['SR_B6', 'SR_B5', 'SR_B4'],max:0.5};
+Map.addLayer(L8, visualization, 'Fort McMurray (2016)');
+
+// 2019 area for comparision
+var L8_2 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+.filterDate('2019-06-01','2019-08-31' ) // time filter
+.map(applyScaleFactors) // scale images
+.map(maskClouds) // mask clouds and shadows
+.median() // median image of the time duration
+.clip (extent);
+var visualization = {bands: ['SR_B6', 'SR_B5', 'SR_B4'], max: 0.5};
+Map.addLayer(L8_2, visualization, 'Fort McMurray (2019)');
+
+// Function to create and add an NBR band
+var calcNBR = function(image){
+var NBR = image.normalizedDifference(['SR_B5', 'SR_B7']).rename("NBR"); 
+// NBR is the normalized difference between NIR and SWIR
+var newImage = image.addBands(NBR);
+return newImage;
+};
+// Add a normalized burn ratio band into the image
+var bands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'NBR'];
+var L8 = calcNBR(L8).select(bands);
+var L8_2 = calcNBR(L8_2).select(bands);
+
+
+var visNBR = {min: 0,max: 0.79,opacity: 1,gamma:1};
+Map.addLayer(L8.select('NBR'),visNBR, 'NBR of Fort McMurray (2016)');
+
+// NDVI function
+var calcNDVI = function(image){
+  var ndvi = image.normalizedDifference(['SR_B5','SR_B4']).rename("NDVI");
+  var newImage = image.addBands(ndvi);
+  return newImage;
+};
+
+var bands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'NBR', 'NDVI'];
+var L8 = calcNDVI(L8).select(bands);
+var L8_2 = calcNDVI(L8_2).select(bands);
+
+Map.addLayer(L8.select('NDVI'),{min:0,max:1}, 'NDVI of Fort McMurray (func)');
+
+// using band math calculation for NDVI
+var nir = L8.select('SR_B5'); //selecting NIR band
+var red = L8.select('SR_B4'); //Selecting Red band
+var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+Map.addLayer(ndvi,{min:0,max:1}, 'NDVI of Fort McMurray (Math)');
+
+// Merging all the samples
+var samples = Water.merge(Vegetation).merge(UrbanIndustry).merge(Burned);
+
+// exporting table of samples
+//Export.table.toDrive({
+//collection: samples,
+//description: 'LCsample2016',
+//fileFormat: 'SHP'
+//});
+
+// making spectral data the attribute for points
+var label = 'Class';
+var input = L8.select(bands);
+var spectral4Samples = input.sampleRegions({
+collection:samples,
+properties:[label],
+scale:30
+});
+
+var bands_subset = ['SR_B2', 'SR_B3', 'NBR', 'NDVI']
+// splitting samples into training and validation points
+var indexedSamples = spectral4Samples.randomColumn();
+var trainSet = indexedSamples.filter(ee.Filter.lessThan('random',0.7));
+var testSet = indexedSamples.filter(ee.Filter.greaterThanOrEquals('random',0.7));
+
+// training cart classifier
+var classifier = ee.Classifier.smileRandomForest(10).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands}); 
+
+// classify the image using the same bands as the training dataset
+var classified_16 = L8.select(bands).classify(classifier);
+var classified_19 = L8_2.select(bands).classify(classifier);
+
+// Validating dataset using error matrix
+var validated = testSet.classify(classifier);
+var testAccuracy = validated.errorMatrix('Class', 'classification');
+print('Validation error matrix: ', testAccuracy);
+print('Validation overall accuracy: ', testAccuracy.accuracy());
+
+// Classification map
+var classificationPalette = [
+'blue', //water (0)
+'green', //vegetation (1)
+'cyan',// urban & industry (2)
+'maroon',// burned (3)
+];
+Map.addLayer(classified_16, {palette:classificationPalette, min: 0, max: 3},
+'classification map 2016')
+Map.addLayer(classified_19, {palette:classificationPalette, min: 0, max: 3},
+'classification map 2019')
+
+var region = aoi.buffer(50000).bounds();
+var exportImg1 = classified_16.clip(region);
+var exportImg2 = classified_19.clip(region);
+
+Export.image.toDrive({
+  image: exportImg1.mask(exportImg1), // Ensure to mask out areas with no data
+  description: 'Fort_McMurray_LC_2016', 
+  folder: 'Fort_McMurray', 
+  fileNamePrefix: 'Fort_McMurray_LC_16', 
+  region: region, 
+  scale: 30, 
+  crs: 'EPSG:5070', 
+  maxPixels: 1e13
+});
+
+Export.image.toDrive({
+  image: exportImg2.mask(exportImg2), // Ensure to mask out areas with no data
+  description: 'Fort_McMurray_LC_2019', 
+  folder: 'Fort_McMurray', 
+  fileNamePrefix: 'Fort_McMurray_LC_19', 
+  region: region, 
+  scale: 30, 
+  crs: 'EPSG:5070', 
+  maxPixels: 1e13
+});
