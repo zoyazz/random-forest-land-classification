@@ -1,4 +1,5 @@
 # random-forest-land-classification
+Langauge used: Java on Google Earth Engine
 This project analyzes images from the summers of 2016 and 2019 using satellite imagery from NASA's Landsat 8. It employs random forest algorithms to study the spectral profile of the land and classify it into categories such as water, urban, rural, and burned areas. The project aims to create a map of the classified areas to determine the extent of burned land and assess how the land is recovering over time.
 
 ## Steps:
