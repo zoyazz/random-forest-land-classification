@@ -20,3 +20,5 @@ Use the classified sample points to train the random forest model.
 
 6) Assessing Model Validity
 Evaluate the accuracy of the model using testing sample data.
+
+![Fort McMurray 2016](FortMcMurray-2016)
